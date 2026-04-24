@@ -37,7 +37,7 @@ Karena sensor MQ-2 pada simulasi Wokwi menggunakan pembacaan analog (ADC 200 - 1
   - OLED Display 128x64 I2C (0x3C)
 - **Output Audio:** Buzzer
 - **Input:** Push Button (sebagai tombol Reset/Interrupt)
-- **Lainnya:** Kabel Jumper
+- **Lainnya:** Kabel Jumper, Breadboard
 
 ---
 
