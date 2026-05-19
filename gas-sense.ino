@@ -33,10 +33,14 @@ void TaskBuzzer(void *pvParameters);
 void TaskButton(void *pvParameters);
 
 enum GasStatus {
-  STATUS_SAFE,     // aman
-  STATUS_WARNING,  // waspada
-  STATUS_DANGER    // bahaya
+  STATUS_SAFE,
+  STATUS_WARNING,
+  STATUS_DANGER
 };
+
+volatile GasStatus currentStatus = STATUS_SAFE;
+volatile int currentPPM = 0;
+volatile bool alarmActive = false;
 
 void setup(){
 
@@ -46,7 +50,7 @@ void setup(){
     pinMode(PIN_LED_RED,OUTPUT);
     pinMode(PIN_LED_YELLOW,OUTPUT);
     pinMode(PIN_BUZZER,OUTPUT);
-    pinMode(PIN_BUZZER,INPUT_PULLUP);
+    pinMode(PIN_BUTTON,INPUT_PULLUP);
     
     xTaskCreate(TaskSensor,"MQ135",1024,NULL,1,NULL);
     xTaskCreate(TaskDisplay,"LCD Display",256,NULL,1,NULL);
@@ -64,30 +68,100 @@ void setup(){
 
 void loop(){}
 
-void TaskSensor(void *pvParameters){
-    for(;;){
-        int sensorValue = analogRead(PIN_MQ135); 
-        Serial.print("sensor mq135 val:");
-        Serial.println(sensorValue);
+void TaskSensor(void *pvParameters) {
+    const float RL = 10.0;
+    const float R0 = 10.0;
+    const float m = -0.47;
+    const float b = 1.31;
+    
+    for (;;) {
+        int adc = analogRead(PIN_MQ135);
+        float vOut = (adc * 5.0) / 1023.0;
+        
+        if (vOut > 0.0) {
+            float rS = RL * ((5.0 - vOut) / vOut);
+            float ratio = rS / R0;
+            currentPPM = pow(10, ((log10(ratio) - b) / m));
+        } else {
+            currentPPM = 0;
+        }
+
+        if (currentPPM < 300) {
+            currentStatus = STATUS_SAFE;
+        } else if (currentPPM <= 1000) {
+            currentStatus = STATUS_WARNING;
+            alarmActive = true;
+        } else {
+            currentStatus = STATUS_DANGER;
+            alarmActive = true;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(500));
     }
 }
 
-void TaskDisplay(void *pvParameters){
-    for(;;){
+void TaskDisplay(void *pvParameters) {
+    bool redBlink = false;
+    
+    for (;;) {
         lcd.setCursor(0, 0);
-        lcd.print("Hello World!");
-        vTaskDelay(100 / portTICK_PERIOD_MS);
+        if (currentStatus == STATUS_SAFE) {
+            lcd.print(F("Status: AMAN   "));
+            digitalWrite(PIN_LED_GREEN, HIGH);
+            digitalWrite(PIN_LED_YELLOW, LOW);
+            digitalWrite(PIN_LED_RED, LOW);
+        } else if (currentStatus == STATUS_WARNING) {
+            lcd.print(F("Status: WARNING"));
+            digitalWrite(PIN_LED_GREEN, LOW);
+            digitalWrite(PIN_LED_YELLOW, HIGH);
+            digitalWrite(PIN_LED_RED, LOW);
+        } else {
+            lcd.print(F("Status: BAHAYA!"));
+            digitalWrite(PIN_LED_GREEN, LOW);
+            digitalWrite(PIN_LED_YELLOW, LOW);
+            redBlink = !redBlink;
+            digitalWrite(PIN_LED_RED, redBlink ? HIGH : LOW);
+        }
+        
+        int progress = currentPPM > 2000 ? 100 : (currentPPM * 100) / 2000;
+        char buffer[17];
+        sprintf(buffer, "%d%% (%d ppm)    ", progress, currentPPM);
+        lcd.setCursor(0, 1);
+        lcd.print(buffer);
+
+        vTaskDelay(pdMS_TO_TICKS(500));
     }
 }
 
-void TaskBuzzer(void *pvParameters){
-    for(;;){
-        
+void TaskBuzzer(void *pvParameters) {
+    for (;;) {
+        if (alarmActive) {
+            if (currentStatus == STATUS_DANGER) {
+                tone(PIN_BUZZER, 800);
+                vTaskDelay(pdMS_TO_TICKS(300));
+                tone(PIN_BUZZER, 1200);
+                vTaskDelay(pdMS_TO_TICKS(300));
+            } else {
+                tone(PIN_BUZZER, 1000);
+                vTaskDelay(pdMS_TO_TICKS(500));
+                noTone(PIN_BUZZER);
+                vTaskDelay(pdMS_TO_TICKS(3000));
+            }
+        } else {
+            noTone(PIN_BUZZER);
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
     }
 }
 
-void TaskButton(void *pvParameters){
-    for(;;){
-        
+void TaskButton(void *pvParameters) {
+    for (;;) {
+        if (digitalRead(PIN_BUTTON) == LOW) {
+            if (currentStatus == STATUS_SAFE) {
+                alarmActive = false;
+            }
+            vTaskDelay(pdMS_TO_TICKS(200));
+        }
+        vTaskDelay(pdMS_TO_TICKS(50));
     }
 }
