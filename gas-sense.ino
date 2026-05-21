@@ -32,9 +32,9 @@ void TaskDisplay(void *pvParameters);
 void TaskBuzzer(void *pvParameters);
 void TaskButton(void *pvParameters);
 
-enum GasStatus { STATUS_SAFE, STATUS_WARNING, STATUS_DANGER };
+enum GasStatus { STATUS_CLEAN, STATUS_POLUTED, STATUS_HAZARDOUS };
 
-volatile GasStatus currentStatus = STATUS_SAFE;
+volatile GasStatus currentStatus = STATUS_CLEAN;
 volatile int currentPPM = 0;
 volatile bool alarmActive = false;
 
@@ -60,6 +60,7 @@ void setup() {
   lcd.print(F("LPG Gas Detector"));
   lcd.setCursor(0, 1);
   lcd.print(F("Initializing..."));
+  Serial.println(F("Setup finished. System Initialized."));
 }
 
 void loop() {}
@@ -82,33 +83,40 @@ void TaskSensor(void *pvParameters) {
       currentPPM = 0;
     }
 
-    if (currentPPM < 300) {
-      currentStatus = STATUS_SAFE;
-    } else if (currentPPM <= 1000) {
-      currentStatus = STATUS_WARNING;
+    if (currentPPM <= 100) {
+      currentStatus = STATUS_CLEAN;
+    } else if (currentPPM >= 100 && currentPPM <= 300) {
+      currentStatus = STATUS_POLUTED;
       alarmActive = true;
     } else {
-      currentStatus = STATUS_DANGER;
+      currentStatus = STATUS_HAZARDOUS;
       alarmActive = true;
     }
+
+    Serial.print(F("TaskSensor - ADC: "));
+    Serial.print(adc);
+    Serial.print(F(" | PPM: "));
+    Serial.print(currentPPM);
+    Serial.print(F(" | Status: "));
+    Serial.println(currentStatus);
 
     vTaskDelay(pdMS_TO_TICKS(500));
   }
 }
 
 void TaskDisplay(void *pvParameters) {
-  lcd.clear();
   bool redBlink = false;
 
   for (;;) {
+    lcd.clear();
     lcd.setCursor(0, 0);
-    if (currentStatus == STATUS_SAFE) {
-      lcd.print(F("Status: AMAN"));
+    if (currentStatus == STATUS_CLEAN) {
+      lcd.print(F("Status: BERSIH"));
       digitalWrite(PIN_LED_GREEN, HIGH);
       digitalWrite(PIN_LED_YELLOW, LOW);
       digitalWrite(PIN_LED_RED, LOW);
-    } else if (currentStatus == STATUS_WARNING) {
-      lcd.print(F("Status: WARNING"));
+    } else if (currentStatus == STATUS_POLUTED) {
+      lcd.print(F("Status: KOTOR"));
       digitalWrite(PIN_LED_GREEN, LOW);
       digitalWrite(PIN_LED_YELLOW, HIGH);
       digitalWrite(PIN_LED_RED, LOW);
@@ -120,12 +128,16 @@ void TaskDisplay(void *pvParameters) {
       digitalWrite(PIN_LED_RED, redBlink ? HIGH : LOW);
     }
 
-    int progress = currentPPM > 2000 ? 100 : (currentPPM * 100) / 2000;
+    int progress = currentPPM > 300 ? 100 : (currentPPM * 100) / 300;
     lcd.setCursor(0, 1);
     lcd.print(progress);
     lcd.print(F("% ("));
     lcd.print(currentPPM);
     lcd.print(F(" ppm)    "));
+
+    Serial.print(F("TaskDisplay - Update LCD | Progress: "));
+    Serial.print(progress);
+    Serial.println(F("%"));
 
     vTaskDelay(pdMS_TO_TICKS(500));
   }
@@ -134,7 +146,9 @@ void TaskDisplay(void *pvParameters) {
 void TaskBuzzer(void *pvParameters) {
   for (;;) {
     if (alarmActive) {
-      if (currentStatus == STATUS_DANGER) {
+      Serial.print(F("TaskBuzzer - Alarm ACTIVE! Status: "));
+      Serial.println(currentStatus);
+      if (currentStatus == STATUS_HAZARDOUS) {
         tone(PIN_BUZZER, 800);
         vTaskDelay(pdMS_TO_TICKS(300));
         tone(PIN_BUZZER, 1200);
@@ -155,7 +169,9 @@ void TaskBuzzer(void *pvParameters) {
 void TaskButton(void *pvParameters) {
   for (;;) {
     if (digitalRead(PIN_BUTTON) == LOW) {
-      if (currentStatus == STATUS_SAFE) {
+      Serial.println(F("TaskButton - Button Pressed!"));
+      if (currentStatus == STATUS_CLEAN) {
+        Serial.println(F("TaskButton - Alarm Reset."));
         alarmActive = false;
       }
       vTaskDelay(pdMS_TO_TICKS(200));
