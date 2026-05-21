@@ -61,8 +61,8 @@ void setup() {
 
   xTaskCreate(TaskSensor, "MQ135", 128, NULL, 1, NULL);
   xTaskCreate(TaskDisplay, "LCD", 128, NULL, 1, NULL);
-  xTaskCreate(TaskBuzzer, "Buzzer", 64, NULL, 1, NULL);
-  xTaskCreate(TaskButton, "Button", 64, NULL, 1, NULL);
+  xTaskCreate(TaskBuzzer, "Buzzer", 128, NULL, 1, NULL);
+  xTaskCreate(TaskButton, "Button", 128, NULL, 1, NULL);
 
   // Tampilan splash saat pertama kali menyala
   lcd.init();
@@ -128,20 +128,19 @@ void TaskDisplay(void *pvParameters) {
   for (;;) {
     SensorData data;
     if (dataQueue != NULL && xQueuePeek(dataQueue, &data, 0) == pdTRUE) {
-      lcd.clear();
       lcd.setCursor(0, 0);
       if (data.status == STATUS_CLEAN) {
-        lcd.print(F("Status: BERSIH"));
+        lcd.print(F("Status: BERSIH  "));
         digitalWrite(PIN_LED_GREEN, HIGH);
         digitalWrite(PIN_LED_YELLOW, LOW);
         digitalWrite(PIN_LED_RED, LOW);
       } else if (data.status == STATUS_POLUTED) {
-        lcd.print(F("Status: KOTOR"));
+        lcd.print(F("Status: KOTOR   "));
         digitalWrite(PIN_LED_GREEN, LOW);
         digitalWrite(PIN_LED_YELLOW, HIGH);
         digitalWrite(PIN_LED_RED, LOW);
       } else {
-        lcd.print(F("Status: BAHAYA!"));
+        lcd.print(F("Status: BAHAYA! "));
         digitalWrite(PIN_LED_GREEN, LOW);
         digitalWrite(PIN_LED_YELLOW, LOW);
         redBlink = !redBlink;
@@ -153,7 +152,7 @@ void TaskDisplay(void *pvParameters) {
       lcd.print(progress);
       lcd.print(F("% ("));
       lcd.print(data.ppm);
-      lcd.print(F(" ppm)    "));
+      lcd.print(F(" ppm)      "));
 
       Serial.print(F("TaskDisplay - Update LCD | Progress: "));
       Serial.print(progress);
@@ -180,7 +179,14 @@ void TaskBuzzer(void *pvParameters) {
           tone(PIN_BUZZER, 1000);
           vTaskDelay(pdMS_TO_TICKS(500));
           noTone(PIN_BUZZER);
-          vTaskDelay(pdMS_TO_TICKS(3000));
+          
+          for (int i = 0; i < 30; i++) {
+            SensorData tempData;
+            if (xQueuePeek(dataQueue, &tempData, 0) == pdTRUE) {
+               if (tempData.status != data.status) break; // Keluar dari delay jika status berubah
+            }
+            vTaskDelay(pdMS_TO_TICKS(100));
+          }
         }
       } else {
         noTone(PIN_BUZZER);
