@@ -11,6 +11,7 @@
  */
 
 #include <Arduino_FreeRTOS.h>
+#include <queue.h>
 #include <LiquidCrystal_I2C.h>
 #include <Wire.h>
 
@@ -34,9 +35,13 @@ void TaskButton(void *pvParameters);
 
 enum GasStatus { STATUS_CLEAN, STATUS_POLUTED, STATUS_HAZARDOUS };
 
-volatile GasStatus currentStatus = STATUS_CLEAN;
-volatile int currentPPM = 0;
-volatile bool alarmActive = false;
+struct SensorData {
+  GasStatus status;
+  int ppm;
+  bool alarmActive;
+};
+
+QueueHandle_t dataQueue;
 
 void setup() {
 
@@ -47,6 +52,12 @@ void setup() {
   pinMode(PIN_LED_YELLOW, OUTPUT);
   pinMode(PIN_BUZZER, OUTPUT);
   pinMode(PIN_BUTTON, INPUT_PULLUP);
+
+  dataQueue = xQueueCreate(1, sizeof(SensorData));
+  if (dataQueue != NULL) {
+    SensorData initialData = {STATUS_CLEAN, 0, false};
+    xQueueOverwrite(dataQueue, &initialData);
+  }
 
   xTaskCreate(TaskSensor, "MQ135", 128, NULL, 1, NULL);
   xTaskCreate(TaskDisplay, "LCD", 128, NULL, 1, NULL);
@@ -74,31 +85,38 @@ void TaskSensor(void *pvParameters) {
   for (;;) {
     int adc = analogRead(PIN_MQ135);
     float vOut = (adc * 5.0) / 1023.0;
+    int currentPPM = 0;
 
     if (vOut > 0.0) {
       float rS = RL * ((5.0 - vOut) / vOut);
       float ratio = rS / R0;
       currentPPM = pow(10, ((log10(ratio) - b) / m));
-    } else {
-      currentPPM = 0;
     }
 
-    if (currentPPM <= 100) {
-      currentStatus = STATUS_CLEAN;
-    } else if (currentPPM >= 100 && currentPPM <= 300) {
-      currentStatus = STATUS_POLUTED;
-      alarmActive = true;
-    } else {
-      currentStatus = STATUS_HAZARDOUS;
-      alarmActive = true;
-    }
+    SensorData data;
+    if (dataQueue != NULL) {
+      xQueuePeek(dataQueue, &data, 0); // Ambil state alarm terakhir
+      data.ppm = currentPPM;
 
-    Serial.print(F("TaskSensor - ADC: "));
-    Serial.print(adc);
-    Serial.print(F(" | PPM: "));
-    Serial.print(currentPPM);
-    Serial.print(F(" | Status: "));
-    Serial.println(currentStatus);
+      if (currentPPM <= 100) {
+        data.status = STATUS_CLEAN;
+      } else if (currentPPM > 100 && currentPPM <= 300) {
+        data.status = STATUS_POLUTED;
+        data.alarmActive = true;
+      } else {
+        data.status = STATUS_HAZARDOUS;
+        data.alarmActive = true;
+      }
+
+      xQueueOverwrite(dataQueue, &data);
+
+      Serial.print(F("TaskSensor - ADC: "));
+      Serial.print(adc);
+      Serial.print(F(" | PPM: "));
+      Serial.print(data.ppm);
+      Serial.print(F(" | Status: "));
+      Serial.println(data.status);
+    }
 
     vTaskDelay(pdMS_TO_TICKS(500));
   }
@@ -108,36 +126,39 @@ void TaskDisplay(void *pvParameters) {
   bool redBlink = false;
 
   for (;;) {
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    if (currentStatus == STATUS_CLEAN) {
-      lcd.print(F("Status: BERSIH"));
-      digitalWrite(PIN_LED_GREEN, HIGH);
-      digitalWrite(PIN_LED_YELLOW, LOW);
-      digitalWrite(PIN_LED_RED, LOW);
-    } else if (currentStatus == STATUS_POLUTED) {
-      lcd.print(F("Status: KOTOR"));
-      digitalWrite(PIN_LED_GREEN, LOW);
-      digitalWrite(PIN_LED_YELLOW, HIGH);
-      digitalWrite(PIN_LED_RED, LOW);
-    } else {
-      lcd.print(F("Status: BAHAYA!"));
-      digitalWrite(PIN_LED_GREEN, LOW);
-      digitalWrite(PIN_LED_YELLOW, LOW);
-      redBlink = !redBlink;
-      digitalWrite(PIN_LED_RED, redBlink ? HIGH : LOW);
+    SensorData data;
+    if (dataQueue != NULL && xQueuePeek(dataQueue, &data, 0) == pdTRUE) {
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      if (data.status == STATUS_CLEAN) {
+        lcd.print(F("Status: BERSIH"));
+        digitalWrite(PIN_LED_GREEN, HIGH);
+        digitalWrite(PIN_LED_YELLOW, LOW);
+        digitalWrite(PIN_LED_RED, LOW);
+      } else if (data.status == STATUS_POLUTED) {
+        lcd.print(F("Status: KOTOR"));
+        digitalWrite(PIN_LED_GREEN, LOW);
+        digitalWrite(PIN_LED_YELLOW, HIGH);
+        digitalWrite(PIN_LED_RED, LOW);
+      } else {
+        lcd.print(F("Status: BAHAYA!"));
+        digitalWrite(PIN_LED_GREEN, LOW);
+        digitalWrite(PIN_LED_YELLOW, LOW);
+        redBlink = !redBlink;
+        digitalWrite(PIN_LED_RED, redBlink ? HIGH : LOW);
+      }
+
+      int progress = data.ppm > 300 ? 100 : (data.ppm * 100) / 300;
+      lcd.setCursor(0, 1);
+      lcd.print(progress);
+      lcd.print(F("% ("));
+      lcd.print(data.ppm);
+      lcd.print(F(" ppm)    "));
+
+      Serial.print(F("TaskDisplay - Update LCD | Progress: "));
+      Serial.print(progress);
+      Serial.println(F("%"));
     }
-
-    int progress = currentPPM > 300 ? 100 : (currentPPM * 100) / 300;
-    lcd.setCursor(0, 1);
-    lcd.print(progress);
-    lcd.print(F("% ("));
-    lcd.print(currentPPM);
-    lcd.print(F(" ppm)    "));
-
-    Serial.print(F("TaskDisplay - Update LCD | Progress: "));
-    Serial.print(progress);
-    Serial.println(F("%"));
 
     vTaskDelay(pdMS_TO_TICKS(500));
   }
@@ -145,22 +166,27 @@ void TaskDisplay(void *pvParameters) {
 
 void TaskBuzzer(void *pvParameters) {
   for (;;) {
-    if (alarmActive) {
-      Serial.print(F("TaskBuzzer - Alarm ACTIVE! Status: "));
-      Serial.println(currentStatus);
-      if (currentStatus == STATUS_HAZARDOUS) {
-        tone(PIN_BUZZER, 800);
-        vTaskDelay(pdMS_TO_TICKS(300));
-        tone(PIN_BUZZER, 1200);
-        vTaskDelay(pdMS_TO_TICKS(300));
+    SensorData data;
+    if (dataQueue != NULL && xQueuePeek(dataQueue, &data, 0) == pdTRUE) {
+      if (data.alarmActive) {
+        Serial.print(F("TaskBuzzer - Alarm ACTIVE! Status: "));
+        Serial.println(data.status);
+        if (data.status == STATUS_HAZARDOUS) {
+          tone(PIN_BUZZER, 800);
+          vTaskDelay(pdMS_TO_TICKS(300));
+          tone(PIN_BUZZER, 1200);
+          vTaskDelay(pdMS_TO_TICKS(300));
+        } else {
+          tone(PIN_BUZZER, 1000);
+          vTaskDelay(pdMS_TO_TICKS(500));
+          noTone(PIN_BUZZER);
+          vTaskDelay(pdMS_TO_TICKS(3000));
+        }
       } else {
-        tone(PIN_BUZZER, 1000);
-        vTaskDelay(pdMS_TO_TICKS(500));
         noTone(PIN_BUZZER);
-        vTaskDelay(pdMS_TO_TICKS(3000));
+        vTaskDelay(pdMS_TO_TICKS(100));
       }
     } else {
-      noTone(PIN_BUZZER);
       vTaskDelay(pdMS_TO_TICKS(100));
     }
   }
@@ -170,9 +196,13 @@ void TaskButton(void *pvParameters) {
   for (;;) {
     if (digitalRead(PIN_BUTTON) == LOW) {
       Serial.println(F("TaskButton - Button Pressed!"));
-      if (currentStatus == STATUS_CLEAN) {
-        Serial.println(F("TaskButton - Alarm Reset."));
-        alarmActive = false;
+      SensorData data;
+      if (dataQueue != NULL && xQueuePeek(dataQueue, &data, 0) == pdTRUE) {
+        if (data.status == STATUS_CLEAN) {
+          Serial.println(F("TaskButton - Alarm Reset."));
+          data.alarmActive = false;
+          xQueueOverwrite(dataQueue, &data);
+        }
       }
       vTaskDelay(pdMS_TO_TICKS(200));
     }
